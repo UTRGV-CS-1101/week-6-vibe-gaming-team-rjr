@@ -21,6 +21,7 @@
             padding: 20px;
             border-radius: 10px;
             box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            position: relative; /* allow absolutely positioned children like play button */
         }
         
         canvas {
@@ -55,6 +56,11 @@
 <body>
     <div class="game-container">
         <canvas id="gameCanvas" width="800" height="600"></canvas>
+        <!-- button shown when the game is over so the user can restart without refreshing -->
+        <button id="playAgainBtn" style="display:none; position:absolute; top:50%; left:50%; transform:translate(-50%, -50%);
+                 padding: 10px 20px; font-size: 24px; border:none; border-radius:5px; background:#e74c3c; color:#fff; cursor:pointer;">
+            Play Again
+        </button>
         <div class="controls">
             <h3>Controls</h3>
             <p>Use <span class="key">W</span><span class="key">A</span><span class="key">S</span><span class="key">D</span> keys to move the weasel</p>
@@ -94,12 +100,21 @@
                 this.gameState = 'playing'; // 'playing' or 'gameOver'
                 this.gameStartTime = Date.now();
                 this.gameEndTime = null;
+                this.lives = 5;                   // player lives
+                this.shield = false;             // whether shield is active
+                this.speedBoostEnd = 0;          // timestamp when speed boost expires
+                this.speedMultiplier = 1;        // used to increase ring speed over time
                 
                 // Rings
                 this.rings = [];
                 this.ringSpawnDelay = 3000; // 3 seconds
                 this.lastRingSpawn = 0;
                 this.ringsSpawned = 0;
+                
+                // Pellets for powerups
+                this.pellets = [];
+                this.pelletSpawnDelay = 8000; // spawn every 8 seconds
+                this.lastPelletSpawn = 0;
                 
                 this.init();
             }
@@ -121,6 +136,10 @@
                 
                 // Start game loop
                 this.gameLoop();
+
+                // hook up play again button
+                const btn = document.getElementById('playAgainBtn');
+                btn.addEventListener('click', () => this.resetGame());
             }
             
             setupInputHandlers() {
@@ -164,13 +183,24 @@
             update() {
                 if (this.gameState === 'gameOver') return;
                 
-                // Spawn rings every 3 seconds
+                // Time calculations
                 const currentTime = Date.now();
+                const survivalTime = (currentTime - this.gameStartTime) / 1000;
+                // gradually increase ring speed multiplier
+                this.speedMultiplier = 1 + survivalTime * 0.05;
+
+                // Spawn rings every 3 seconds (limit to 3)
                 if (this.ringsSpawned < 3 && currentTime - this.gameStartTime > this.ringSpawnDelay * (this.ringsSpawned + 1)) {
                     this.spawnRing();
                     this.ringsSpawned++;
                 }
-                
+
+                // Spawn pellets periodically
+                if (currentTime - this.lastPelletSpawn > this.pelletSpawnDelay) {
+                    this.spawnPellet();
+                    this.lastPelletSpawn = currentTime;
+                }
+
                 // Handle movement
                 if (this.keys.w) {
                     this.player.y -= this.player.speed;
@@ -189,11 +219,19 @@
                 this.player.x = Math.max(0, Math.min(this.gameWidth - this.player.width, this.player.x));
                 this.player.y = Math.max(0, Math.min(this.gameHeight - this.player.height, this.player.y));
                 
-                // Update rings
+                // Update rings and pellets
                 this.updateRings();
-                
-                // Check collisions
+                this.updatePellets();
+
+                // Check collisions with rings and pellets
                 this.checkCollisions();
+                this.checkPelletCollisions();
+
+                // Handle speed boost expiration
+                if (this.speedBoostEnd && currentTime > this.speedBoostEnd) {
+                    this.player.speed = 5;
+                    this.speedBoostEnd = 0;
+                }
             }
             
             draw() {
@@ -206,6 +244,9 @@
                 
                 // Draw rings
                 this.drawRings();
+                
+                // Draw pellets
+                this.drawPellets();
                 
                 // Draw player
                 this.drawPlayer();
@@ -220,21 +261,83 @@
             }
             
             spawnRing() {
+                // speed increases with game time through multiplier
+                const baseSpeed = 8 + (this.ringsSpawned * 2);
                 const ring = {
                     x: Math.random() * (this.gameWidth - 60),
                     y: Math.random() * (this.gameHeight - 60),
                     radius: 30,
-                    speed: 8 + (this.ringsSpawned * 2), // Ring 1: 8, Ring 2: 10, Ring 3: 12
-                    dx: (Math.random() - 0.5) * 2, // Random direction
-                    dy: (Math.random() - 0.5) * 2
+                    speed: baseSpeed,
+                    dx: (Math.random() - 0.5), // unit direction
+                    dy: (Math.random() - 0.5)
                 };
-                
-                // Normalize direction vector
+
+                // Normalize direction vector and store base values
                 const length = Math.sqrt(ring.dx * ring.dx + ring.dy * ring.dy);
                 ring.dx = (ring.dx / length) * ring.speed;
                 ring.dy = (ring.dy / length) * ring.speed;
-                
+                ring.baseDx = ring.dx;
+                ring.baseDy = ring.dy;
+
                 this.rings.push(ring);
+            }
+
+            spawnPellet() {
+                // randomly decide between speed boost or shield pellet
+                const types = ['speed', 'shield'];
+                const type = types[Math.floor(Math.random() * types.length)];
+                const pellet = {
+                    x: Math.random() * (this.gameWidth - 30) + 15,
+                    y: Math.random() * (this.gameHeight - 30) + 15,
+                    radius: 15,
+                    type
+                };
+                this.pellets.push(pellet);
+            }
+
+            updatePellets() {
+                // nothing to move for now, pellets are static
+                // we could implement timeouts to despawn later if desired
+            }
+
+            drawPellets() {
+                for (let p of this.pellets) {
+                    if (p.type === 'speed') {
+                        this.ctx.fillStyle = '#f1c40f';
+                    } else if (p.type === 'shield') {
+                        this.ctx.fillStyle = '#3498db';
+                    }
+                    this.ctx.beginPath();
+                    this.ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+                    this.ctx.fill();
+                    // border
+                    this.ctx.strokeStyle = '#fff';
+                    this.ctx.lineWidth = 2;
+                    this.ctx.stroke();
+                }
+            }
+
+            checkPelletCollisions() {
+                const playerCenterX = this.player.x + this.player.width / 2;
+                const playerCenterY = this.player.y + this.player.height / 2;
+                const playerRadius = Math.min(this.player.width, this.player.height) / 2;
+                for (let i = this.pellets.length - 1; i >= 0; i--) {
+                    const p = this.pellets[i];
+                    const dist = Math.sqrt(
+                        Math.pow(playerCenterX - p.x, 2) +
+                        Math.pow(playerCenterY - p.y, 2)
+                    );
+                    if (dist < playerRadius + p.radius) {
+                        // collect
+                        if (p.type === 'speed') {
+                            this.player.speed += 3;
+                            this.speedBoostEnd = Date.now() + 5000; // 5 seconds
+                        } else if (p.type === 'shield') {
+                            this.shield = true;
+                        }
+                        this.pellets.splice(i, 1);
+                    }
+                }
             }
             
             updateRings() {
@@ -247,6 +350,10 @@
                 
                 // Update ring positions
                 for (let ring of this.rings) {
+                    // apply global speed multiplier
+                    ring.dx = ring.baseDx * this.speedMultiplier;
+                    ring.dy = ring.baseDy * this.speedMultiplier;
+
                     // Move ring
                     ring.x += ring.dx;
                     ring.y += ring.dy;
@@ -254,10 +361,12 @@
                     // Bounce off walls
                     if (ring.x - ring.radius <= 0 || ring.x + ring.radius >= this.gameWidth) {
                         ring.dx = -ring.dx;
+                        ring.baseDx = -ring.baseDx;
                         ring.x = Math.max(ring.radius, Math.min(this.gameWidth - ring.radius, ring.x));
                     }
                     if (ring.y - ring.radius <= 0 || ring.y + ring.radius >= this.gameHeight) {
                         ring.dy = -ring.dy;
+                        ring.baseDy = -ring.baseDy;
                         ring.y = Math.max(ring.radius, Math.min(this.gameHeight - ring.radius, ring.y));
                     }
                 }
@@ -316,9 +425,18 @@
                     );
                     
                     if (distance < playerRadius + ring.radius) {
-                        this.gameState = 'gameOver';
-                        this.gameEndTime = Date.now();
-                        return;
+                        if (this.shield) {
+                            // consume shield
+                            this.shield = false;
+                        } else {
+                            this.lives--;
+                            if (this.lives <= 0) {
+                                this.gameState = 'gameOver';
+                                this.gameEndTime = Date.now();
+                                document.getElementById('playAgainBtn').style.display = 'block';
+                                return;
+                            }
+                        }
                     }
                 }
             }
@@ -388,7 +506,7 @@
             drawUI() {
                 // Draw position indicator
                 this.ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
-                this.ctx.fillRect(10, 10, 200, 80);
+                this.ctx.fillRect(10, 10, 200, 150);
                 
                 this.ctx.fillStyle = '#fff';
                 this.ctx.font = '14px Arial';
@@ -396,6 +514,16 @@
                 this.ctx.fillText(`Position: ${Math.round(this.player.x)}, ${Math.round(this.player.y)}`, 20, 30);
                 this.ctx.fillText(`Speed: ${this.player.speed}`, 20, 50);
                 this.ctx.fillText(`Rings: ${this.rings.length}/3`, 20, 70);
+                this.ctx.fillText(`Lives: ${this.lives}`, 20, 90);
+                if (this.shield) {
+                    this.ctx.fillText(`Shield: ON`, 20, 110);
+                }
+                if (this.speedBoostEnd) {
+                    const remaining = Math.ceil((this.speedBoostEnd - Date.now()) / 1000);
+                    if (remaining > 0) {
+                        this.ctx.fillText(`Boost: ${remaining}s`, 20, 130);
+                    }
+                }
                 
                 // Draw survival time
                 const currentTime = this.gameState === 'gameOver' ? this.gameEndTime : Date.now();
@@ -424,13 +552,32 @@
                 this.ctx.fillText(`You survived ${survivalTime} seconds!`, this.gameWidth / 2, this.gameHeight / 2 + 20);
                 
                 this.ctx.font = '18px Arial';
-                this.ctx.fillText('Refresh to play again', this.gameWidth / 2, this.gameHeight / 2 + 60);
+                this.ctx.fillText('Click the button to play again', this.gameWidth / 2, this.gameHeight / 2 + 60);
             }
             
             gameLoop() {
                 this.update();
                 this.draw();
                 requestAnimationFrame(() => this.gameLoop());
+            }
+
+            resetGame() {
+                // restore to initial conditions
+                this.player.x = this.gameWidth / 2;
+                this.player.y = this.gameHeight / 2;
+                this.player.speed = 5;
+                this.lives = 5;
+                this.shield = false;
+                this.speedBoostEnd = 0;
+                this.speedMultiplier = 1;
+                this.rings = [];
+                this.ringsSpawned = 0;
+                this.pellets = [];
+                this.lastPelletSpawn = Date.now();
+                this.gameState = 'playing';
+                this.gameStartTime = Date.now();
+                this.gameEndTime = null;
+                document.getElementById('playAgainBtn').style.display = 'none';
             }
         }
         
